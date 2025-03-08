@@ -46,6 +46,8 @@ foreach($server in $servers) {
                     InterfaceIP    = $matches[1]
                     InterfaceID    = $matches[2].Trim()
                     Addresses      = @()
+                    #MacAddress = (Get-NetIPConfiguration | Where-Object { $_.IPv4Address.IPAddress -eq $matches[1] } | Select-Object -ExpandProperty InterfaceAlias | Get-NetAdapter | Select-Object -ExpandProperty MacAddress)
+                    MacAddress = (get-netadapter | where-object { $_.InterfaceIndex -eq (Get-NetIPConfiguration | Where-Object { $_.IPv4Address.IPAddress -eq $matches[2] }).InterfaceIndex }).MacAddress
                 }
                 $interfaces += $currentInterface
             }
@@ -123,7 +125,7 @@ foreach($server in $servers) {
             "Software" = Get-Package | where-object { $_.ProviderName -eq "Programs" } | select Name, Version | ConvertTo-Json
             "Services" = Get-Service | select Name, Status | ConvertTo-Json
             "Listeners" = Get-NetTCPConnection -State Listen | select LocalAddress, LocalPort | where-object { $_.LocalAddress -eq "0.0.0.0"} | ConvertTo-Json
-            "ArpList" = $interfaces | select InterfaceID, Addresses | ConvertTo-Json -Depth 5
+            "ArpList" = $interfaces | ConvertTo-Json -Depth 5
             "Fim" = $fim | ConvertTo-Json
         }
 
@@ -131,7 +133,7 @@ foreach($server in $servers) {
 
     }
 
-    $date = Get-Date -Format "yMd"
+    $date = Get-Date -Format "yyyyMMdd"
 
     mkdir ".\programs\$($date)"
     mkdir ".\programs\$($date)\$($server)"
