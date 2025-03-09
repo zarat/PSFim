@@ -8,6 +8,8 @@ Param(
     $servers
 )
 
+
+
 foreach($srv in $servers) {
 
     $Database = "$datadir\$($srv).db"
@@ -18,22 +20,17 @@ foreach($srv in $servers) {
 
     $result = Invoke-Command -ComputerName $srv -ScriptBlock {
 
-        
-        $3rdpartysoftware = """Name"";""Version""`n"
-        Get-Package | where-object { $_.ProviderName -eq "Programs" -and $_.Version -ne $null } | foreach-object {
-            $3rdpartysoftware += """$($_.Name)"";""$($_.Version)""`n"
-        }
-        
-        $services = """Name"";""DisplayName"";""Status""`n"
-        Get-Service | where-object {
-            $services += """$($_.Name)"";""$($_.DisplayName)"";""$($_.Status)""`n"
-        }
-        
-        $listeners = """Address"";""Port""`n"
-        Get-NetTCPConnection -State Listen | where-object { $_.LocalAddress -eq "0.0.0.0"} | foreach-object {
-            $listeners += """$($_.LocalAddress)"";""$($_.LocalPort)""`n"
-        }
-        
+        $config = @(
+        #"software",
+        #"services",
+        #"listeners", 
+        #"arplist",
+        #"fim", 
+        "eventlog"
+        )
+
+    
+        if($config -contains "arplist") {
         $arpOutput = arp -a
         $interfaces = @()
         $currentInterface = $null
@@ -65,8 +62,10 @@ foreach($srv in $servers) {
                 $arplist += """$($if.InterfaceID)"";""$($address.IPAddress)"";""$($address.MACAddress)""`n"
             }
         }
+        }
 
-
+        
+        if($config -contains "fim") {
         $fimfiles = @(
             "C:\Windows\System32\drivers\etc\hosts",
             "C:\Windows\System32\drivers\etc\networks",
@@ -96,10 +95,13 @@ foreach($srv in $servers) {
                 Hash = $hash 
             }
         }
+        }
 
+        
+        if($config -contains "eventlog") {
         # Login- und Logoff-Ereignisse auslesen
         #$logEvents = Get-WinEvent -LogName Security -FilterHashtable @{Id=4624,4634,4647,4648} -MaxEvents 100 | ForEach-Object {
-        $logEvents = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4624,4634,4647,4648} -MaxEvents 1000 | ForEach-Object {
+        $logEvents = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4624,4634,4647,4648}  | ForEach-Object {
             $eventData = [xml]$_.ToXml()
             $eventProps = $eventData.Event.EventData.Data
 
@@ -134,6 +136,7 @@ foreach($srv in $servers) {
                 
             }
         } | Sort-Object Timestamp #-Descending
+        }
 
         #$patches = $(winget update --disable-interactivity)
 
@@ -180,48 +183,70 @@ foreach($srv in $servers) {
         # Only works on workstations
         #$patches = Get-Winget-Upgradables1
 
-        $out = @{
-            "Software" = Get-Package | where-object { $_.ProviderName -eq "Programs" } | select Name, Version #| ConvertTo-Json
-            "Services" = Get-Service | select Name, Status #| ConvertTo-Json
-            "Listeners" = Get-NetTCPConnection -State Listen | select LocalAddress, LocalPort | where-object { $_.LocalAddress -eq "0.0.0.0"} #| ConvertTo-Json
-            "ArpList" = $interfaces #| ConvertTo-Json -Depth 5
-            "Fim" = $fim #| ConvertTo-Json
-            "Log" = $logEvents
-            #"Patches" = $patches
-        }
 
+        $out = @{}
+        if($config -contains "software") { 
+            $out.Software = Get-Package | where-object { $_.ProviderName -eq "Programs" } | select Name, Version 
+        }
+        if($config -contains "services") { 
+            $out.Services = Get-Service | select Name, Status
+        }
+        if($config -contains "listeners") { 
+            $out.Listeners = Get-NetTCPConnection -State Listen | select LocalAddress, LocalPort | where-object { $_.LocalAddress -eq "0.0.0.0"}
+        }
+        if($config -contains "arplist") { 
+            $out.ArpList = $interfaces
+        }
+        if($config -contains "fim") { 
+            $out.Fim = $fim
+        }
+        if($config -contains "eventlog") { 
+            $out.Log = $logEvents
+        }
+        
         $out
 
     }
 
 
     $last = & $SQLitePath $Database "INSERT INTO scans (name, timestamp) VALUES ('Test', strftime('%s', 'now'));SELECT last_insert_rowid();"
-    Write-Host "[info] Start indexing $($srv)"
+    Write-Host "[$(Get-Date)] Start indexing $($srv)"
 
+    if($result.Software -ne $null) {
+    Write-Host "[$(Get-Date)] Start indexing $(($result.Software | measure-Object).Count) software packages"
     & $SQLitePath $Database "CREATE TABLE IF NOT EXISTS software (id INTEGER PRIMARY KEY, scan_id INTEGER, name TEXT, version TEXT);"
     $c = 0
     $result.Software | foreach-object { 
         & $SQLitePath $Database "INSERT INTO software (scan_id, name, version) VALUES ('$($last)', '$($_.Name)', '$($_.Version)');"
         $c++
     }
-    Write-Host "[info] $($c) software packages indexed"
+    Write-Host "[$(Get-Date)] $($c) software packages indexed"
+    }
 
+    if($result.Services -ne $null) {
+    Write-Host "[$(Get-Date)] Start indexing $(($result.Services | measure-Object).Count) services"
     & $SQLitePath $Database "CREATE TABLE IF NOT EXISTS services (id INTEGER PRIMARY KEY, scan_id INTEGER, name TEXT, status TEXT);"
     $c = 0
     $result.Services | foreach-object { 
         & $SQLitePath $Database "INSERT INTO services (scan_id, name, status) VALUES ('$($last)', '$($_.Name)', '$($_.Status)');"
         $c++
     }
-    Write-Host "[info] $($c) services indexed"
+    Write-Host "[$(Get-Date)] $($c) services indexed"
+    }
 
+    if($result.Listeners -ne $null) {
+    Write-Host "[$(Get-Date)] Start indexing $(($result.Listeners | measure-Object).Count) listeners"
     & $SQLitePath $Database "CREATE TABLE IF NOT EXISTS listeners (id INTEGER PRIMARY KEY, scan_id INTEGER, port TEXT);"
     $c = 0
     $result.Listeners | foreach-object { 
         & $SQLitePath $Database "INSERT INTO listeners (scan_id, port) VALUES ('$($last)', '$($_.LocalPort)');"
         $c++
     }
-    Write-Host "[info] $($c) listeners indexed"
+    Write-Host "[$(Get-Date)] $($c) listeners indexed"
+    }
 
+    if($result.ArpList -ne $null) {
+    Write-Host "[$(Get-Date)] Start indexing $(($result.ArpList | measure-Object).Count) arp entries"
     & $SQLitePath $Database "CREATE TABLE IF NOT EXISTS arplist (id INTEGER PRIMARY KEY, scan_id INTEGER, if TEXT, ip TEXT, mac TEXT);"
     $c = 0
     foreach($if in $result.ArpList) { 
@@ -231,35 +256,42 @@ foreach($srv in $servers) {
             $c++
         }
     }
-    Write-Host "[info] $($c) arp entries indexed"
+    Write-Host "[$(Get-Date)] $($c) arp entries indexed"
+    }
 
+    if($result.Fim -ne $null) {
+    Write-Host "[$(Get-Date)] Start indexing $(($result.Fim | measure-Object).Count) fim"
     & $SQLitePath $Database "CREATE TABLE IF NOT EXISTS fim (id INTEGER PRIMARY KEY, scan_id INTEGER, name TEXT, hash TEXT);"
     $c = 0
     $result.Fim | foreach-object { 
         & $SQLitePath $Database "INSERT INTO fim (scan_id, name, hash) VALUES ('$($last)', '$($_.File)', '$($_.Hash)');"
         $c++
     }
-    Write-Host "[info] $($c) fim entries indexed"
+    Write-Host "[$(Get-Date)] $($c) fim entries indexed"
+    }
 
     #foreach($e in $result.Log) {
     #    if($e.Timestamp -le "2025-03-08 22:30:05") { continue }
     #    Write-Output $e #"$($e.Timestamp) - $($e.Type) - $($e.User) - $($e.LogonID) - $($e.Workstation)"
     #}
 
+    if($result.Log -ne $null) {
+    Write-Host "[$(Get-Date)] Start indexing $(($result.Log | measure-Object).Count) eventlog entries"
     & $SQLitePath $Database "CREATE TABLE IF NOT EXISTS eventlog (id INTEGER PRIMARY KEY, timestamp TEXT, type INTEGER, user TEXT, message TEXT);"
     # Get last timestamp
     $last_timestamp = & $SQLitePath $Database "select timestamp from eventlog order by id desc LIMIT 1;"
     $c = 0
     $result.Log | foreach-object { 
         if($_.Timestamp -le $last_timestamp) { 
-            Write-Host "skipping old log"
+            #Write-Host "skipping old log"
         }
         else {
             & $SQLitePath $Database "INSERT INTO eventlog (timestamp, type, user, message) VALUES ('$($_.Timestamp)', '$($_.Type)', '$($_.User)', '$($_.Message)');"
             $c++
         }
     }
-    Write-Host "[info] $($c) eventlog entries indexed"
+    Write-Host "[$(Get-Date)] $($c) eventlog entries indexed"
+    }
 
     #foreach($e in $result.Patches) {
         #Write-Output $e #"$($e.Timestamp) - $($e.Type) - $($e.User) - $($e.LogonID) - $($e.Workstation)"
@@ -383,3 +415,85 @@ $servers = @(
 #Test-Changes -servers $servers
 Test-Index -server vie-t-srv-audit -table services
 #>
+
+
+
+
+function Get-Winget-Upgradables {
+	$apps  = @()
+	$start = $false
+
+	# Remove unnecessary first lines
+	winget upgrade --accept-source-agreements --include-unknown | foreach-object {
+		if ( $psitem -match '^([-]+)$' ) {
+			$start = $true
+		}
+		elseif ( $start -eq $true ) {
+			$apps += $psitem
+		}
+	}
+
+	# Remove the last line
+	$apps = $apps[ 0..( $apps.length - 2 ) ]
+
+
+	# Loop the array and create an object for any value
+	$index = 0
+	$apps.foreach({
+		$pattern = "^(.+\u2026?)\s+([\u2026\.\w\+]+)\s+([\.\d]+)\s+([\.\d]+)\s+([\w]+)$"
+		$apps[ $index ] = @{
+			'name'      = ( $apps[ $index ] -replace $pattern, '$1' ) -replace '\s+$', ''
+			'id'        = $apps[ $index ] -replace $pattern, '$2'
+			'version'   = $apps[ $index ] -replace $pattern, '$3'
+			'available' = $apps[ $index ] -replace $pattern, '$4'
+			'source'    = $apps[ $index ] -replace $pattern, '$5'
+		}
+
+		$index += 1
+	})
+
+	return $apps
+}
+
+function Get-Winget-Upgradables1 {
+    $apps  = @()
+    $start = $false
+
+    # Remove unnecessary first lines
+    winget upgrade --accept-source-agreements --include-unknown | foreach-object {
+        if ( $psitem -match '^([-]+)$' ) {
+            $start = $true
+        }
+        elseif ( $start -eq $true ) {
+            $apps += $psitem
+        }
+    }
+
+    # Remove the last line
+    $apps = $apps[ 0..( $apps.length - 2 ) ]
+
+    # Loop the array and create a custom object for each app
+    $index = 0
+    $apps | ForEach-Object {
+        $pattern = "^(.+\u2026?)\s+([\u2026\.\w\+]+)\s+([\.\d]+)\s+([\.\d]+)\s+([\w]+)$"
+        
+        # Create a PowerShell custom object for each app
+        $appObject = [PSCustomObject]@{
+            Name      = ($_ -replace $pattern, '$1') -replace '\s+$', ''
+            Id        = ($_ -replace $pattern, '$2')
+            Version   = ($_ -replace $pattern, '$3')
+            Available = ($_ -replace $pattern, '$4')
+            Source    = ($_ -replace $pattern, '$5')
+        }
+
+        # Add the object to the array
+        $apps[$index] = $appObject
+        $index += 1
+    }
+
+    return $apps
+}
+
+#Get-Winget-Upgradables1
+
+
